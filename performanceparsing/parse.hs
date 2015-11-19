@@ -10,14 +10,10 @@ import Data.Time
 import System.Environment
 import qualified Data.Map.Strict as M
 import Control.Applicative
-import Data.Char (isSpace, digitToInt)
-import Data.Functor.Identity
+import Data.Char (isSpace, digitToInt, isUpper)
 import Data.List (foldl')
 
-import Text.Parsec.Text
-import Text.Parsec.Char
-import qualified Text.Parsec.Token as TOK
-import Text.Parsec hiding (many, (<|>), optional)
+import Data.Attoparsec.Text
 
 data UnixFile = UnixFileGen { _fileInode     :: !Int
                             , _fileHardLinks :: !Int
@@ -30,8 +26,8 @@ data UnixFile = UnixFileGen { _fileInode     :: !Int
                             , _fileType      :: !FileType
                             , _filePerms     :: !FPerms
                             , _fileSize      :: !Int
-                            , _filePath      :: !FilePath
-                            , _fileTarget    :: !(Maybe FilePath)
+                            , _filePath      :: !Text
+                            , _fileTarget    :: !(Maybe Text)
                             } deriving (Show, Eq)
 
 data FileType = TFile
@@ -62,16 +58,16 @@ newtype FPerms = FPerms Int
 
 timestamp :: Parser UTCTime
 timestamp = do
-    y <- parseInt <* char '-'
-    m <- parseInt <* char '-'
-    d <- parseInt <* char '+'
-    h <- parseInt <* char ':'
-    mi <- parseInt <* char ':'
-    s <- realToFrac <$> TOK.float tok <* char '+'
+    y <- decimal <* char '-'
+    m <- decimal <* char '-'
+    d <- decimal <* char '+'
+    h <- scientific <* char ':'
+    mi <- scientific <* char ':'
+    s <- scientific <* char '+'
     let day = fromGregorian y m d
         difftime = h * 3600 + mi * 60 + s
-        tm = UTCTime day difftime
-    tz <- some upper <* spaces
+        tm = UTCTime day (realToFrac difftime)
+    tz <- takeWhile1 isUpper <* skipSpace
     return $ case tz of
                  "CEST" -> addUTCTime (-7200) tm
                  "CET" -> addUTCTime (-3600) tm
@@ -80,50 +76,32 @@ timestamp = do
 filetype :: Parser FileType
 filetype = anyChar >>= maybe (fail "invalid file type") return . char2ft
 
-tok :: TOK.GenTokenParser Text () Identity
-tok = TOK.makeTokenParser TOK.LanguageDef
-        { TOK.commentStart   = ""
-        , TOK.commentEnd     = ""
-        , TOK.commentLine    = ""
-        , TOK.nestedComments = True
-        , TOK.identStart     = letter <|> char '_'
-        , TOK.identLetter    = alphaNum <|> oneOf "_'"
-        , TOK.opStart        = alphaNum
-        , TOK.opLetter       = oneOf ":!#$%&*+./<=>?@\\^|-~"
-        , TOK.reservedOpNames= []
-        , TOK.reservedNames  = []
-        , TOK.caseSensitive  = True
-        }
-
-parseInt :: Num a => Parser a
-parseInt = fromIntegral <$> TOK.integer tok
-
 myOctal :: Parser Int
 myOctal = foldl' (\acc n -> acc * 8 + digitToInt n) 0 <$> some digit
 
 findline :: Parser UnixFile
 findline = do
     let t :: Parser a -> Parser a
-        t parser = parser <* spaces
-    meta <- UnixFileGen <$> parseInt
-                        <*> parseInt
+        t parser = parser <* skipSpace
+    meta <- UnixFileGen <$> t decimal
+                        <*> t decimal
                         <*> timestamp
                         <*> timestamp
                         <*> timestamp
-                        <*> t (T.pack <$> some (satisfy (not . isSpace)))
-                        <*> t (T.pack <$> some (satisfy (not . isSpace)))
-                        <*> parseInt
+                        <*> t (takeWhile1 (not . isSpace))
+                        <*> t (takeWhile1 (not . isSpace))
+                        <*> t decimal
                         <*> t filetype
-                        <*> (FPerms <$> myOctal)
-                        <*> parseInt
-    rst <- words <$> t (some (satisfy ( /= '\n' )))
+                        <*> (FPerms <$> t myOctal)
+                        <*> t decimal
+    rst <- T.words <$> t (takeWhile1 ( /= '\n' ))
     return $ case break (== "->") rst of
-                 (a, []) -> meta (unwords a) Nothing
-                 (a, ["->"]) -> meta (unwords a) Nothing
-                 (a, b) -> meta (unwords a) (Just (unwords b))
+                 (a, []) -> meta (T.unwords a) Nothing
+                 (a, ["->"]) -> meta (T.unwords a) Nothing
+                 (a, b) -> meta (T.unwords a) (Just (T.unwords b))
 
 parseFile :: FilePath -> IO [UnixFile]
-parseFile fp = either (error . show) id . parse (many findline <* eof) fp <$> T.readFile fp
+parseFile fp = either (error . show) id . parseOnly (some findline) <$> T.readFile fp
 
 main :: IO ()
 main = do

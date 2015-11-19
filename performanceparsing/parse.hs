@@ -6,12 +6,14 @@ import Data.Bits
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time
 import System.Environment
 import qualified Data.Map.Strict as M
 import Control.Applicative
+import Data.AffineSpace ((.-^))
 import Data.Char (isSpace, digitToInt, isUpper)
 import Data.List (foldl')
+import Control.Lens
+import Data.Thyme
 
 import Data.Attoparsec.Text
 
@@ -64,13 +66,13 @@ timestamp = do
     h <- scientific <* char ':'
     mi <- scientific <* char ':'
     s <- scientific <* char '+'
-    let day = fromGregorian y m d
-        difftime = h * 3600 + mi * 60 + s
-        tm = UTCTime day (realToFrac difftime)
+    let day = YearMonthDay y m d ^. from gregorian
+        difftime = fromSeconds $ (h * 3600 + mi * 60) + s
+        tm = UTCTime day difftime ^. from utcTime
     tz <- takeWhile1 isUpper <* skipSpace
     return $ case tz of
-                 "CEST" -> addUTCTime (-7200) tm
-                 "CET" -> addUTCTime (-3600) tm
+                 "CEST" -> tm .-^ fromSeconds (7200 :: Int)
+                 "CET" -> tm .-^ fromSeconds (3600 :: Int)
                  _ -> tm
 
 filetype :: Parser FileType

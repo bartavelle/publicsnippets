@@ -3,33 +3,33 @@
 module Main (main) where
 
 import Data.Bits
-import Data.Text (Text)
-import qualified Data.Text as T
-import qualified Data.Text.IO as T
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
+import Data.ByteString (ByteString)
 import System.Environment
 import qualified Data.Map.Strict as M
 import Control.Applicative
 import Data.AffineSpace ((.-^))
-import Data.Char (isSpace, digitToInt, isUpper)
+import Data.Char (digitToInt, isUpper)
 import Data.List (foldl')
 import Control.Lens
 import Data.Thyme
 
-import Data.Attoparsec.Text
+import Data.Attoparsec.ByteString.Char8
 
 data UnixFile = UnixFileGen { _fileInode     :: !Int
                             , _fileHardLinks :: !Int
                             , _fileAtime     :: !UTCTime
                             , _fileMtime     :: !UTCTime
                             , _fileCtime     :: !UTCTime
-                            , _fileUser      :: !Text
-                            , _fileGroup     :: !Text
+                            , _fileUser      :: !ByteString
+                            , _fileGroup     :: !ByteString
                             , _fileBlocks    :: !Int
                             , _fileType      :: !FileType
                             , _filePerms     :: !FPerms
                             , _fileSize      :: !Int
-                            , _filePath      :: !Text
-                            , _fileTarget    :: !(Maybe Text)
+                            , _filePath      :: !ByteString
+                            , _fileTarget    :: !(Maybe ByteString)
                             } deriving (Show, Eq)
 
 data FileType = TFile
@@ -96,14 +96,14 @@ findline = do
                         <*> t filetype
                         <*> (FPerms <$> t myOctal)
                         <*> t decimal
-    rst <- T.words <$> t (takeWhile1 ( /= '\n' ))
+    rst <- BS8.words <$> t (takeWhile1 ( /= '\n' ))
     return $ case break (== "->") rst of
-                 (a, []) -> meta (T.unwords a) Nothing
-                 (a, ["->"]) -> meta (T.unwords a) Nothing
-                 (a, b) -> meta (T.unwords a) (Just (T.unwords b))
+                 (a, []) -> meta (BS8.unwords a) Nothing
+                 (a, ["->"]) -> meta (BS8.unwords a) Nothing
+                 (a, b) -> meta (BS8.unwords a) (Just (BS8.unwords b))
 
 parseFile :: FilePath -> IO [UnixFile]
-parseFile fp = either (error . show) id . parseOnly (some findline) <$> T.readFile fp
+parseFile fp = either (error . show) id . parseOnly (some findline) <$> BS.readFile fp
 
 main :: IO ()
 main = do

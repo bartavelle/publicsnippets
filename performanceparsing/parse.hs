@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns #-}
 module Main (main) where
 
 import Data.Bits
@@ -58,22 +59,30 @@ char2ft x = case x of
 newtype FPerms = FPerms Int
                deriving (Show, Ord, Eq, Num, Bits)
 
+parseYMD :: Parser Day
+parseYMD = do
+    !y <- decimal <* char '-'
+    !m <- decimal <* char '-'
+    !d <- decimal
+    return $! YearMonthDay y m d ^. from gregorian
+
+parseDTime :: Parser DiffTime
+parseDTime = do
+    !h  <- decimal <* char ':'
+    !mi <- decimal <* char ':'
+    !s  <- scientific
+    return $! fromSeconds $ fromIntegral (h * 3600 + mi * 60 :: Int) + s
+
 timestamp :: Parser UTCTime
 timestamp = do
-    y <- decimal <* char '-'
-    m <- decimal <* char '-'
-    d <- decimal <* char '+'
-    h <- scientific <* char ':'
-    mi <- scientific <* char ':'
-    s <- scientific <* char '+'
-    let day = YearMonthDay y m d ^. from gregorian
-        difftime = fromSeconds $ (h * 3600 + mi * 60) + s
-        tm = UTCTime day difftime ^. from utcTime
-    tz <- takeWhile1 isUpper <* skipSpace
-    return $ case tz of
-                 "CEST" -> tm .-^ fromSeconds (7200 :: Int)
-                 "CET" -> tm .-^ fromSeconds (3600 :: Int)
-                 _ -> tm
+    !day <- parseYMD <* char '+'
+    !difftime <- parseDTime <* char '+'
+    let !tm = UTCTime day difftime ^. from utcTime
+    !tz <- takeWhile1 isUpper <* skipSpace
+    return $! case tz of
+                  "CEST" -> tm .-^ fromSeconds (7200 :: Int)
+                  "CET" -> tm .-^ fromSeconds (3600 :: Int)
+                  _ -> tm
 
 filetype :: Parser FileType
 filetype = anyChar >>= maybe (fail "invalid file type") return . char2ft
@@ -85,22 +94,22 @@ findline :: Parser UnixFile
 findline = do
     let t :: Parser a -> Parser a
         t parser = parser <* skipSpace
-    meta <- UnixFileGen <$> t decimal
-                        <*> t decimal
-                        <*> timestamp
-                        <*> timestamp
-                        <*> timestamp
-                        <*> t (takeWhile1 (not . isSpace))
-                        <*> t (takeWhile1 (not . isSpace))
-                        <*> t decimal
-                        <*> t filetype
-                        <*> (FPerms <$> t myOctal)
-                        <*> t decimal
-    rst <- BS8.words <$> t (takeWhile1 ( /= '\n' ))
-    return $ case break (== "->") rst of
-                 (a, []) -> meta (BS8.unwords a) Nothing
-                 (a, ["->"]) -> meta (BS8.unwords a) Nothing
-                 (a, b) -> meta (BS8.unwords a) (Just (BS8.unwords b))
+    !meta <- UnixFileGen <$> t decimal
+                         <*> t decimal
+                         <*> timestamp
+                         <*> timestamp
+                         <*> timestamp
+                         <*> t (takeWhile1 (not . isSpace))
+                         <*> t (takeWhile1 (not . isSpace))
+                         <*> t decimal
+                         <*> t filetype
+                         <*> (FPerms <$> t myOctal)
+                         <*> t decimal
+    !rst <- BS8.words <$> t (takeWhile1 ( /= '\n' ))
+    return $! case break (== "->") rst of
+                  (a, []) -> meta (BS8.unwords a) Nothing
+                  (a, ["->"]) -> meta (BS8.unwords a) Nothing
+                  (a, b) -> meta (BS8.unwords a) (Just (BS8.unwords b))
 
 parseFile :: FilePath -> IO [UnixFile]
 parseFile fp = either (error . show) id . parseOnly (some findline) <$> BS.readFile fp

@@ -13,7 +13,7 @@ import System.Environment
 import qualified Data.Map.Strict as M
 import Control.Applicative
 import Data.AffineSpace ((.-^))
-import Data.Char (isUpper, isSpace, isDigit)
+import Data.Char (isUpper, isDigit)
 import Data.Maybe (fromMaybe)
 import Control.Lens
 import Data.Thyme
@@ -23,7 +23,9 @@ newtype Parser a = Parser { getParser :: BS.ByteString -> Maybe (a, BS.ByteStrin
 
 instance Applicative Parser where
     pure x = Parser (Just . (x,))
+    {-# INLINE pure #-}
     Parser f <*> Parser x = Parser $! \s -> f s >>= \(f', s') -> x s' >>= \(x', s'') -> return $! (f' x', s'')
+    {-# INLINE (<*>) #-}
 
 instance Alternative Parser where
     empty = Parser (const Nothing)
@@ -31,15 +33,23 @@ instance Alternative Parser where
 
 instance Monad Parser where
     Parser a >>= f = Parser $ \s -> a s >>= \(!a', !s') -> getParser (f a') s'
+    {-# INLINE (>>=) #-}
 
 getInt :: BS.ByteString -> Int
 getInt = BS.foldl' (\acc n -> acc * 10 + fromIntegral (n - 0x30)) 0
+{-# INLINE getInt #-}
+
+getOctal :: BS.ByteString -> Int
+getOctal = BS.foldl' (\acc n -> acc * 8 + fromIntegral (n - 0x30)) 0
+{-# INLINE getOctal #-}
 
 decimal :: Parser Int
 decimal = getInt <$> takeWhile1 isDigit
+{-# INLINE decimal #-}
 
 char :: Char -> Parser ()
 char c = Parser $ \s -> if BS.null s then Nothing else if BS8.head s == c then Just ((), BS.tail s) else Nothing
+{-# INLINE char #-}
 
 scientific :: Parser Double
 scientific = do
@@ -56,12 +66,7 @@ takeWhile1 :: (Char -> Bool) -> Parser BS.ByteString
 takeWhile1 prd = Parser $ \s -> case BS8.span prd s of
                                     ("", _) -> Nothing
                                     (a,b) -> Just (a,b)
-
-skipSpace :: Parser ()
-skipSpace = Parser $ \s -> Just ((), BS8.dropWhile isSpace s)
-
-anyChar :: Parser Char
-anyChar = Parser $ \s -> if BS.null s then Nothing else Just (BS8.head s, BS8.tail s)
+{-# INLINE takeWhile1 #-}
 
 parseOnly :: Parser a -> BS.ByteString -> Maybe a
 parseOnly (Parser p) s = case p s of
@@ -92,6 +97,34 @@ data FileType = TFile
               | TChar
               | TDoor
               deriving (Eq, Show)
+
+findline :: ByteString -> Maybe UnixFile
+findline s = case BS8.split ' ' s of
+                 (inode : hardlinks : atime : mtime : ctime : user : group : blocks : ftype : perms : size : rst) -> do
+                    let (path, target) = case break (== "->") rst of
+                                            (a, []) -> (BS8.unwords a, Nothing)
+                                            (a, ["->"]) -> (BS8.unwords a, Nothing)
+                                            (a, b) -> (BS8.unwords a, Just (BS8.unwords b))
+                    atime' <- parseOnly timestamp atime
+                    mtime' <- parseOnly timestamp mtime
+                    !ctime' <- parseOnly timestamp ctime
+                    ft <- if BS8.length ftype == 1
+                              then char2ft (BS8.head ftype)
+                              else Nothing
+                    return $!  UnixFileGen (getInt inode)
+                                           (getInt hardlinks)
+                                           atime'
+                                           mtime'
+                                           ctime'
+                                           user
+                                           group
+                                           (getInt blocks)
+                                           ft
+                                           (FPerms $! getOctal perms)
+                                           (getInt size)
+                                           path
+                                           target
+                 _ -> Nothing
 
 char2ft :: Char -> Maybe FileType
 char2ft x = case x of
@@ -128,41 +161,14 @@ timestamp = do
     !day <- parseYMD <* char '+'
     !difftime <- parseDTime <* char '+'
     let !tm = UTCTime day difftime ^. from utcTime
-    !tz <- takeWhile1 isUpper <* skipSpace
+    !tz <- takeWhile1 isUpper
     return $! case tz of
                   "CEST" -> tm .-^ fromSeconds (7200 :: Int)
                   "CET" -> tm .-^ fromSeconds (3600 :: Int)
                   _ -> tm
 
-filetype :: Parser FileType
-filetype = anyChar >>= maybe (fail "invalid file type") return . char2ft
-
-myOctal :: Parser Int
-myOctal = BS.foldl' (\acc n -> acc * 8 + fromIntegral (n - 0x30)) 0 <$> takeWhile1 isDigit
-
-findline :: Parser UnixFile
-findline = do
-    let t :: Parser a -> Parser a
-        t parser = parser <* skipSpace
-    !meta <- UnixFileGen <$> t decimal
-                         <*> t decimal
-                         <*> timestamp
-                         <*> timestamp
-                         <*> timestamp
-                         <*> t (takeWhile1 (not . isSpace))
-                         <*> t (takeWhile1 (not . isSpace))
-                         <*> t decimal
-                         <*> t filetype
-                         <*> (FPerms <$> t myOctal)
-                         <*> t decimal
-    !rst <- BS8.words <$> t (takeWhile1 ( /= '\n' ))
-    return $! case break (== "->") rst of
-                  (a, []) -> meta (BS8.unwords a) Nothing
-                  (a, ["->"]) -> meta (BS8.unwords a) Nothing
-                  (a, b) -> meta (BS8.unwords a) (Just (BS8.unwords b))
-
 parseFile :: FilePath -> IO [UnixFile]
-parseFile fp = maybe (error "fail") id . parseOnly (some findline) <$> BS.readFile fp
+parseFile fp = maybe (error "fail") id . mapM findline . BS8.lines <$> BS.readFile fp
 
 main :: IO ()
 main = do

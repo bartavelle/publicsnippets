@@ -1,6 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TupleSections #-}
 module Main (main) where
 
 import Data.Bits
@@ -11,12 +13,60 @@ import System.Environment
 import qualified Data.Map.Strict as M
 import Control.Applicative
 import Data.AffineSpace ((.-^))
-import Data.Char (digitToInt, isUpper)
-import Data.List (foldl')
+import Data.Char (isUpper, isSpace, isDigit)
+import Data.Maybe (fromMaybe)
 import Control.Lens
 import Data.Thyme
 
-import Data.Attoparsec.ByteString.Char8
+newtype Parser a = Parser { getParser :: BS.ByteString -> Maybe (a, BS.ByteString) }
+                   deriving (Functor)
+
+instance Applicative Parser where
+    pure x = Parser (Just . (x,))
+    Parser f <*> Parser x = Parser $! \s -> f s >>= \(f', s') -> x s' >>= \(x', s'') -> return $! (f' x', s'')
+
+instance Alternative Parser where
+    empty = Parser (const Nothing)
+    Parser a <|> Parser b = Parser $! \s -> a s <|> b s
+
+instance Monad Parser where
+    Parser a >>= f = Parser $ \s -> a s >>= \(!a', !s') -> getParser (f a') s'
+
+getInt :: BS.ByteString -> Int
+getInt = BS.foldl' (\acc n -> acc * 10 + fromIntegral (n - 0x30)) 0
+
+decimal :: Parser Int
+decimal = getInt <$> takeWhile1 isDigit
+
+char :: Char -> Parser ()
+char c = Parser $ \s -> if BS.null s then Nothing else if BS8.head s == c then Just ((), BS.tail s) else Nothing
+
+scientific :: Parser Double
+scientific = do
+    d <- decimal
+    f <- fmap (fromMaybe 0) $ optional $ do
+        char '.'
+        s <- takeWhile1 isDigit
+        let ln = BS.length s
+            v = fromIntegral $ getInt s
+        return (v / (10 ^ ln))
+    return $! (fromIntegral d + f)
+
+takeWhile1 :: (Char -> Bool) -> Parser BS.ByteString
+takeWhile1 prd = Parser $ \s -> case BS8.span prd s of
+                                    ("", _) -> Nothing
+                                    (a,b) -> Just (a,b)
+
+skipSpace :: Parser ()
+skipSpace = Parser $ \s -> Just ((), BS8.dropWhile isSpace s)
+
+anyChar :: Parser Char
+anyChar = Parser $ \s -> if BS.null s then Nothing else Just (BS8.head s, BS8.tail s)
+
+parseOnly :: Parser a -> BS.ByteString -> Maybe a
+parseOnly (Parser p) s = case p s of
+                             Just (output, "") -> Just output
+                             _ -> Nothing
 
 data UnixFile = UnixFileGen { _fileInode     :: !Int
                             , _fileHardLinks :: !Int
@@ -88,7 +138,7 @@ filetype :: Parser FileType
 filetype = anyChar >>= maybe (fail "invalid file type") return . char2ft
 
 myOctal :: Parser Int
-myOctal = foldl' (\acc n -> acc * 8 + digitToInt n) 0 <$> some digit
+myOctal = BS.foldl' (\acc n -> acc * 8 + fromIntegral (n - 0x30)) 0 <$> takeWhile1 isDigit
 
 findline :: Parser UnixFile
 findline = do
@@ -112,7 +162,7 @@ findline = do
                   (a, b) -> meta (BS8.unwords a) (Just (BS8.unwords b))
 
 parseFile :: FilePath -> IO [UnixFile]
-parseFile fp = either (error . show) id . parseOnly (some findline) <$> BS.readFile fp
+parseFile fp = maybe (error "fail") id . parseOnly (some findline) <$> BS.readFile fp
 
 main :: IO ()
 main = do

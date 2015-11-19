@@ -3,6 +3,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE RankNTypes #-}
 module Main (main) where
 
 import Data.Bits
@@ -11,28 +12,27 @@ import qualified Data.ByteString.Char8 as BS8
 import Data.ByteString (ByteString)
 import System.Environment
 import qualified Data.Map.Strict as M
-import Control.Applicative
 import Data.AffineSpace ((.-^))
 import Data.Char (isUpper, isDigit)
-import Data.Maybe (fromMaybe)
 import Control.Lens
 import Data.Thyme
 
-newtype Parser a = Parser { getParser :: BS.ByteString -> Maybe (a, BS.ByteString) }
-                   deriving (Functor)
+newtype Parser a = Parser { runParser :: forall r. BS.ByteString -> r -> (BS.ByteString -> a -> r) -> r }
+                   deriving Functor
 
 instance Applicative Parser where
-    pure x = Parser (Just . (x,))
+    pure a = Parser $ \b _ s -> s b a
     {-# INLINE pure #-}
-    Parser f <*> Parser x = Parser $! \s -> f s >>= \(f', s') -> x s' >>= \(x', s'') -> return $! (f' x', s'')
+    Parser pf <*> Parser px = Parser $ \input failure success ->
+        let succ' input' f = px input' failure (\i a -> success i (f a))
+        in  pf input failure succ'
     {-# INLINE (<*>) #-}
 
-instance Alternative Parser where
-    empty = Parser (const Nothing)
-    Parser a <|> Parser b = Parser $! \s -> a s <|> b s
-
 instance Monad Parser where
-    Parser a >>= f = Parser $ \s -> a s >>= \(!a', !s') -> getParser (f a') s'
+    fail _ = Parser $ \_ failure _ -> failure
+    m >>= k = Parser $ \input failure success ->
+        let succ' input' a = runParser (k a) input' failure success
+        in  runParser m input failure succ'
     {-# INLINE (>>=) #-}
 
 getInt :: BS.ByteString -> Int
@@ -47,31 +47,36 @@ decimal :: Parser Int
 decimal = getInt <$> takeWhile1 isDigit
 {-# INLINE decimal #-}
 
+maybeChar :: Char -> Parser Bool
+maybeChar c = Parser $ \input _ success -> if BS.null input then success input False else if BS8.head input == c then success (BS.tail input) True else success input False
+
 char :: Char -> Parser ()
-char c = Parser $ \s -> if BS.null s then Nothing else if BS8.head s == c then Just ((), BS.tail s) else Nothing
+char c = Parser $ \input failure success -> if BS.null input then failure else if BS8.head input == c then success (BS.tail input) () else failure
 {-# INLINE char #-}
 
 scientific :: Parser Double
 scientific = do
     d <- decimal
-    f <- fmap (fromMaybe 0) $ optional $ do
-        char '.'
-        s <- takeWhile1 isDigit
-        let ln = BS.length s
-            v = fromIntegral $ getInt s
-        return (v / (10 ^ ln))
+    nxt <- maybeChar '.'
+    f <- if nxt
+             then do
+                s <- takeWhile1 isDigit
+                let ln = BS.length s
+                    v = fromIntegral $ getInt s
+                return (v / (10 ^ ln))
+             else return 0
     return $! (fromIntegral d + f)
 
 takeWhile1 :: (Char -> Bool) -> Parser BS.ByteString
-takeWhile1 prd = Parser $ \s -> case BS8.span prd s of
-                                    ("", _) -> Nothing
-                                    (a,b) -> Just (a,b)
+takeWhile1 prd = Parser $ \s failure success -> case BS8.span prd s of
+                                                    ("", _) -> failure
+                                                    (a,b) -> success b a
 {-# INLINE takeWhile1 #-}
 
 parseOnly :: Parser a -> BS.ByteString -> Maybe a
-parseOnly (Parser p) s = case p s of
-                             Just (output, "") -> Just output
-                             _ -> Nothing
+parseOnly (Parser p) s = p s Nothing $ \b a -> if BS.null b
+                                                   then Just a
+                                                   else Nothing
 
 data UnixFile = UnixFileGen { _fileInode     :: !Int
                             , _fileHardLinks :: !Int

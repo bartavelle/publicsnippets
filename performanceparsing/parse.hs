@@ -12,25 +12,26 @@ import qualified Data.Map.Strict as M
 import Control.Applicative
 import Data.Char (isSpace, digitToInt)
 import Data.Functor.Identity
+import Data.List (foldl')
 
 import Text.Parsec.Text
 import Text.Parsec.Char
 import qualified Text.Parsec.Token as TOK
 import Text.Parsec hiding (many, (<|>), optional)
 
-data UnixFile = UnixFileGen { _fileInode     :: Int
-                            , _fileHardLinks :: Int
-                            , _fileAtime     :: UTCTime
-                            , _fileMtime     :: UTCTime
-                            , _fileCtime     :: UTCTime
-                            , _fileUser      :: Text
-                            , _fileGroup     :: Text
-                            , _fileBlocks    :: Int
-                            , _fileType      :: FileType
-                            , _filePerms     :: FPerms
-                            , _fileSize      :: Int
-                            , _filePath      :: FilePath
-                            , _fileTarget    :: Maybe FilePath
+data UnixFile = UnixFileGen { _fileInode     :: !Int
+                            , _fileHardLinks :: !Int
+                            , _fileAtime     :: !UTCTime
+                            , _fileMtime     :: !UTCTime
+                            , _fileCtime     :: !UTCTime
+                            , _fileUser      :: !Text
+                            , _fileGroup     :: !Text
+                            , _fileBlocks    :: !Int
+                            , _fileType      :: !FileType
+                            , _filePerms     :: !FPerms
+                            , _fileSize      :: !Int
+                            , _filePath      :: !FilePath
+                            , _fileTarget    :: !(Maybe FilePath)
                             } deriving (Show, Eq)
 
 data FileType = TFile
@@ -98,7 +99,7 @@ parseInt :: Num a => Parser a
 parseInt = fromIntegral <$> TOK.integer tok
 
 myOctal :: Parser Int
-myOctal = foldl (\acc n -> acc * 8 + digitToInt n) 0 <$> some digit
+myOctal = foldl' (\acc n -> acc * 8 + digitToInt n) 0 <$> some digit
 
 findline :: Parser UnixFile
 findline = do

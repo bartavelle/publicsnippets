@@ -14,6 +14,7 @@ import System.Environment
 import qualified Data.Map.Strict as M
 import Data.AffineSpace ((.-^))
 import Data.Char (isUpper, isDigit)
+import Data.Maybe (fromMaybe)
 import Control.Lens
 import Data.Thyme
 
@@ -173,7 +174,7 @@ timestamp = do
                   _ -> tm
 
 parseFile :: FilePath -> IO [UnixFile]
-parseFile fp = maybe (error "fail") id . mapM findline . BS8.lines <$> BS.readFile fp
+parseFile fp = fromMaybe (error "fail") . mapM findline . BS8.lines <$> BS.readFile fp
 
 main :: IO ()
 main = do

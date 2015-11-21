@@ -17,6 +17,7 @@ import Data.Char (isUpper, isDigit)
 import Data.Maybe (fromMaybe)
 import Control.Lens
 import Data.Thyme
+import Control.Parallel.Strategies
 
 newtype Parser a = Parser { runParser :: forall r. BS.ByteString -> r -> (BS.ByteString -> a -> r) -> r }
                    deriving Functor
@@ -174,7 +175,7 @@ timestamp = do
                   _ -> tm
 
 parseFile :: FilePath -> IO [UnixFile]
-parseFile fp = fromMaybe (error "fail") . mapM findline . BS8.lines <$> BS.readFile fp
+parseFile fp = fromMaybe (error "fail") . traverse id . withStrategy (parListChunk 2000 rseq) . map findline . BS8.lines <$> BS.readFile fp
 
 main :: IO ()
 main = do

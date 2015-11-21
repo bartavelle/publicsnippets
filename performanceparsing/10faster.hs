@@ -13,9 +13,9 @@ import Data.ByteString (ByteString)
 import System.Environment
 import qualified Data.Map.Strict as M
 import Data.AffineSpace ((.-^))
-import Data.Char (isUpper, isDigit)
 import Data.Maybe (fromMaybe)
 import Control.Lens
+import Data.Word
 import Data.Thyme
 
 newtype Parser a = Parser { runParser :: forall r. BS.ByteString -> r -> (BS.ByteString -> a -> r) -> r }
@@ -44,32 +44,33 @@ getOctal :: BS.ByteString -> Int
 getOctal = BS.foldl' (\acc n -> acc * 8 + fromIntegral (n - 0x30)) 0
 {-# INLINE getOctal #-}
 
+isDigit :: Word8 -> Bool
+isDigit !x = x >= 0x30 && x <= 0x39
+
+isUpper :: Word8 -> Bool
+isUpper !x = x >= 0x41 && x <= 0x5a
+
 decimal :: Parser Int
 decimal = getInt <$> takeWhile1 isDigit
 {-# INLINE decimal #-}
-
-maybeChar :: Char -> Parser Bool
-maybeChar c = Parser $ \input _ success -> if BS.null input then success input False else if BS8.head input == c then success (BS.tail input) True else success input False
 
 char :: Char -> Parser ()
 char c = Parser $ \input failure success -> if BS.null input then failure else if BS8.head input == c then success (BS.tail input) () else failure
 {-# INLINE char #-}
 
 scientific :: Parser Double
-scientific = do
-    d <- decimal
-    nxt <- maybeChar '.'
-    f <- if nxt
-             then do
-                s <- takeWhile1 isDigit
-                let ln = BS.length s
-                    v = fromIntegral $ getInt s
-                return (v / (10 ^ ln))
-             else return 0
-    return $! (fromIntegral d + f)
+scientific = finalize . BS.foldl' step (0,0) <$> takeWhile1 (\n -> isDigit n || n == 0x2e)
+    where
+        finalize :: (Int, Double) -> Double
+        finalize (!n,!x) = if x == 0
+                             then fromIntegral n
+                             else fromIntegral n / x
+        step (!n,!x) !v = if v == 0x2e
+                              then (n,1)
+                              else (n * 10 + fromIntegral (v - 0x30), x * 10)
 
-takeWhile1 :: (Char -> Bool) -> Parser BS.ByteString
-takeWhile1 prd = Parser $ \s failure success -> case BS8.span prd s of
+takeWhile1 :: (Word8 -> Bool) -> Parser BS.ByteString
+takeWhile1 prd = Parser $ \s failure success -> case BS.span prd s of
                                                     ("", _) -> failure
                                                     (a,b) -> success b a
 {-# INLINE takeWhile1 #-}
@@ -111,25 +112,25 @@ findline s = case BS8.split ' ' s of
                                             (a, []) -> (BS8.unwords a, Nothing)
                                             (a, ["->"]) -> (BS8.unwords a, Nothing)
                                             (a, b) -> (BS8.unwords a, Just (BS8.unwords b))
-                    atime' <- parseOnly timestamp atime
-                    mtime' <- parseOnly timestamp mtime
+                    !atime' <- parseOnly timestamp atime
+                    !mtime' <- parseOnly timestamp mtime
                     !ctime' <- parseOnly timestamp ctime
                     ft <- if BS8.length ftype == 1
                               then char2ft (BS8.head ftype)
                               else Nothing
-                    return $!  UnixFileGen (getInt inode)
-                                           (getInt hardlinks)
-                                           atime'
-                                           mtime'
-                                           ctime'
-                                           user
-                                           group
-                                           (getInt blocks)
-                                           ft
-                                           (FPerms $! getOctal perms)
-                                           (getInt size)
-                                           path
-                                           target
+                    return $! UnixFileGen (getInt inode)
+                                          (getInt hardlinks)
+                                          atime'
+                                          mtime'
+                                          ctime'
+                                          user
+                                          group
+                                          (getInt blocks)
+                                          ft
+                                          (FPerms $! getOctal perms)
+                                          (getInt size)
+                                          path
+                                          target
                  _ -> Nothing
 
 char2ft :: Char -> Maybe FileType
